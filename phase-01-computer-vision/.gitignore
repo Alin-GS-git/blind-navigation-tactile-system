@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+env/
+.idea/
+.vscode/
+.DS_Store
+
+# Downloaded YOLO weights (large binary, auto re-downloaded on first run)
+*.pt
