@@ -14,6 +14,8 @@ import sys
 import time
 import cv2
 
+from config import ESP32_IP, CAMERA_INDEX
+
 # Phase 1's src/ folder is not touched or copied - we just point to it,
 # so Phase 1 stays the single source of truth for detection logic.
 PHASE1_SRC = os.path.join(os.path.dirname(__file__), "..", "..", "phase-01-computer-vision", "src")
@@ -30,7 +32,7 @@ def select_primary_obstacle(detections, method="largest"):
     return max(detections, key=lambda d: d["area"])
 
 
-def main(camera_index=0, esp32_ip="192.168.1.100", communication_enabled=True):
+def main(camera_index=CAMERA_INDEX, esp32_ip=ESP32_IP, communication_enabled=True):
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open camera index {camera_index}.")
@@ -92,5 +94,4 @@ def main(camera_index=0, esp32_ip="192.168.1.100", communication_enabled=True):
 
 
 if __name__ == "__main__":
-    # Replace with your ESP32's IP address (printed to Serial Monitor on boot).
-    main(esp32_ip="192.168.1.100", communication_enabled=True)
+    main(communication_enabled=True)

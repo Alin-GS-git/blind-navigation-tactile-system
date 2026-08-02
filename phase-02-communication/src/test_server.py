@@ -16,6 +16,7 @@ Then, in another terminal, point test_client.py (or main.py) at
 """
 
 from flask import Flask
+from config import TEST_SERVER_PORT
 
 app = Flask(__name__)
 
@@ -47,5 +48,5 @@ def none():
 
 if __name__ == "__main__":
     print("Mock ESP32 server running. Endpoints: /left /center /right /none")
-    print("Point communication.DirectionSender at esp32_ip='127.0.0.1', port=5000")
-    app.run(host="0.0.0.0", port=5000)
+    print(f"Point communication.DirectionSender at esp32_ip='127.0.0.1', port={TEST_SERVER_PORT}")
+    app.run(host="0.0.0.0", port=TEST_SERVER_PORT)
