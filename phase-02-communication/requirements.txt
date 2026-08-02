@@ -1,0 +1,6 @@
+requests>=2.31
+flask>=3.0
+
+# Also requires everything Phase 1 needs (opencv-python, ultralytics, numpy) -
+# see ../phase-01-computer-vision/requirements.txt. Install both if running
+# main.py; only requests+flask are needed for test_client.py/test_server.py.
