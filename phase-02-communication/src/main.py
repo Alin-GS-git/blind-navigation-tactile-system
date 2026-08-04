@@ -1,9 +1,9 @@
 """
 Phase 2 - main entry point.
 
-Reuses the Phase 1 pipeline (camera -> detection -> direction) exactly
-as it was, and adds one thing: after working out the current
-direction, it hands that direction to communication.send_direction().
+Reuses the Phase 1 pipeline (camera -> detection -> occupancy state)
+exactly as it was, and adds one thing: after working out the current
+occupancy state, it hands that state to communication.send_state().
 
 main.py contains NO networking code itself - that all lives in
 communication.py, per the architecture requirement for this phase.
@@ -24,12 +24,6 @@ sys.path.insert(0, os.path.abspath(PHASE1_SRC))
 from detector import ObstacleDetector      # noqa: E402  (Phase 1, unchanged)
 from direction import DirectionClassifier, DirectionStabilizer  # noqa: E402  (Phase 1, unchanged)
 from communication import DirectionSender  # Phase 2
-
-
-def select_primary_obstacle(detections, method="largest"):
-    if not detections:
-        return None
-    return max(detections, key=lambda d: d["area"])
 
 
 def main(camera_index=CAMERA_INDEX, esp32_ip=ESP32_IP, communication_enabled=True):
@@ -55,34 +49,39 @@ def main(camera_index=CAMERA_INDEX, esp32_ip=ESP32_IP, communication_enabled=Tru
 
         # ---- Detection (Phase 1, unchanged) ----
         detections = detector.detect(frame)
-        primary = select_primary_obstacle(detections)
-        raw_direction = classifier.get_direction(primary["center"][0]) if primary else "NO OBSTACLE"
-        direction = stabilizer.update(raw_direction)
+        raw_occupied_regions = classifier.get_occupied_regions(detections)
+        occupied_regions = stabilizer.update(raw_occupied_regions)
 
         # ---- Fan-out: Display + Communication ----
         # Display (Phase 1 style overlay)
         classifier.draw_regions(frame)
-        if primary is not None:
-            x1, y1, x2, y2 = primary["bbox"]
+        for detection in detections:
+            x1, y1, x2, y2 = detection["bbox"]
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, f"{primary['label']} {primary['confidence']:.2f}",
+            cv2.putText(frame, f"{detection['label']} {detection['confidence']:.2f}",
                         (x1, max(y1 - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # Communication (Phase 2) - only fires an HTTP request when direction changes
-        sent = sender.send_direction(direction)
+        # Communication (Phase 2) - only fires an HTTP request when state changes
+        sent = sender.send_state(occupied_regions)
         if sent:
-            print(f"[main] Direction changed -> sent '{direction}' to ESP32")
+            print(f"[main] Occupancy state changed -> sent {occupied_regions} to ESP32")
 
         now = time.time()
         fps = 1.0 / (now - prev_time) if now != prev_time else 0.0
         prev_time = now
 
-        cv2.putText(frame, f"Direction: {direction}", (20, 40),
+        cv2.putText(frame, "Occupied Regions", (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-        cv2.putText(frame, f"FPS: {fps:.1f}", (20, 70),
+        cv2.putText(frame, f"LEFT    : {'YES' if occupied_regions['left'] else 'NO'}", (20, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(frame, f"CENTER  : {'YES' if occupied_regions['center'] else 'NO'}", (20, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(frame, f"RIGHT   : {'YES' if occupied_regions['right'] else 'NO'}", (20, 130),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(frame, f"FPS: {fps:.1f}", (20, 160),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         cv2.putText(frame, f"ESP32: {esp32_ip} {'(on)' if communication_enabled else '(off)'}",
-                    (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                    (20, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
         cv2.imshow("Phase 2 - Detection + Communication", frame)
 
