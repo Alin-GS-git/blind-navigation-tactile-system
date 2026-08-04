@@ -2,8 +2,8 @@
 #include <WebServer.h>
 #include <ESP32Servo.h>
 
-const char* WIFI_SSID="Bozzelli_2.4";
-const char* WIFI_PASSWORD="t@81pa(u51L0";
+const char* WIFI_SSID="";
+const char* WIFI_PASSWORD="";
 
 const int LEFT_PIN=25,CENTER_PIN=26,RIGHT_PIN=27;
 const int UP_ANGLE=90,DOWN_ANGLE=0;
