@@ -1,13 +1,9 @@
 """
 Phase 1 - Computer Vision Obstacle Detection
 
-Entry point: opens the selected camera source, runs detection each
-frame, collects the occupied LEFT / CENTER / RIGHT regions, and
-draws everything on screen.
-
-Camera sources:
-    0 -> Laptop webcam
-    "http://192.168.91.229:8080/video" -> Mobile IP Webcam
+Entry point: opens the configured camera source, runs detection
+each frame, collects the occupied LEFT / CENTER / RIGHT regions,
+and draws everything on screen.
 
 Run with:
     python main.py
@@ -21,23 +17,19 @@ import cv2
 
 from detector import ObstacleDetector
 from direction import DirectionClassifier, DirectionStabilizer
+from config import (
+    CAMERA_SOURCE,
+    CONF_THRESHOLD,
+    STABILIZATION_WINDOW,
+)
 
 
-# ============================================================
-# CAMERA SOURCE
-# ============================================================
-
-# Mobile phone camera through IP Webcam
-CAMERA_SOURCE = "http://192.168.1.69:8080/video"
-
-# To use the laptop webcam instead, change the line above to:
-# CAMERA_SOURCE = 0
-
-
-def main(camera_source=CAMERA_SOURCE, conf_threshold=0.4):
-
+def main(
+    camera_source=CAMERA_SOURCE,
+    conf_threshold=CONF_THRESHOLD,
+):
     # --------------------------------------------------------
-    # Open camera / mobile camera stream
+    # Open configured camera source
     # --------------------------------------------------------
     cap = cv2.VideoCapture(camera_source)
 
@@ -48,12 +40,17 @@ def main(camera_source=CAMERA_SOURCE, conf_threshold=0.4):
             "server is running."
         )
 
-    # Optional: reduce buffering/latency for the network stream
+    # Reduce buffering for network camera streams.
     if isinstance(camera_source, str):
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    detector = ObstacleDetector(conf_threshold=conf_threshold)
-    stabilizer = DirectionStabilizer(window_size=5)
+    detector = ObstacleDetector(
+        conf_threshold=conf_threshold
+    )
+
+    stabilizer = DirectionStabilizer(
+        window_size=STABILIZATION_WINDOW
+    )
 
     prev_time = time.time()
 
@@ -77,28 +74,27 @@ def main(camera_source=CAMERA_SOURCE, conf_threshold=0.4):
         classifier = DirectionClassifier(frame_width)
 
         # ----------------------------------------------------
-        # Step 5 - Detect all obstacles in this frame
+        # Detect all obstacles
         # ----------------------------------------------------
         detections = detector.detect(frame)
 
         # ----------------------------------------------------
-        # Step 6 - Inspect EVERY obstacle and merge the
-        # occupied LEFT / CENTER / RIGHT regions
+        # Inspect EVERY obstacle and determine which regions
+        # are occupied.
         # ----------------------------------------------------
         raw_occupied_regions = classifier.get_occupied_regions(
             detections
         )
 
         # ----------------------------------------------------
-        # Step 10 - Stabilize the region states so they don't
-        # flicker from frame to frame
+        # Stabilize region states
         # ----------------------------------------------------
         occupied_regions = stabilizer.update(
             raw_occupied_regions
         )
 
         # ----------------------------------------------------
-        # Step 9 - Draw detection regions
+        # Draw detection regions
         # ----------------------------------------------------
         classifier.draw_regions(frame)
 
@@ -144,7 +140,7 @@ def main(camera_source=CAMERA_SOURCE, conf_threshold=0.4):
         prev_time = now
 
         # ----------------------------------------------------
-        # Display occupancy information
+        # Display occupied regions
         # ----------------------------------------------------
         cv2.putText(
             frame,
@@ -217,7 +213,7 @@ def main(camera_source=CAMERA_SOURCE, conf_threshold=0.4):
         )
 
         # ----------------------------------------------------
-        # Show video
+        # Display video
         # ----------------------------------------------------
         cv2.imshow(
             "Phase 1 - Obstacle Detection",
@@ -227,7 +223,7 @@ def main(camera_source=CAMERA_SOURCE, conf_threshold=0.4):
         # ----------------------------------------------------
         # Quit with Q
         # ----------------------------------------------------
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     # --------------------------------------------------------
