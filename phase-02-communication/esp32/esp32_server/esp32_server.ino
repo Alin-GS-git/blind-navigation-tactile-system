@@ -28,8 +28,8 @@
 #include <WiFi.h>
 #include <WebServer.h>
 
-const char* WIFI_SSID = "";
-const char* WIFI_PASSWORD = "";
+const char* WIFI_SSID = "All_in";
+const char* WIFI_PASSWORD = "98765432";
 
 WebServer server(80);
 

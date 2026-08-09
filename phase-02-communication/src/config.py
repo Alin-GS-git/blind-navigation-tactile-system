@@ -1,5 +1,5 @@
 # ESP32 Network Configuration
-ESP32_IP = "192.168.1.84"
+ESP32_IP = "192.168.137.181"
 ESP32_PORT = 80
 
 # Camera Configuration
