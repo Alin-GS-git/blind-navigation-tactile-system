@@ -16,12 +16,55 @@ import time
 import cv2
 
 from detector import ObstacleDetector
-from direction import DirectionClassifier, DirectionStabilizer
+from direction import (
+    DirectionClassifier,
+    DirectionStabilizer,
+    DetectionTracker,
+)
 from config import (
     CAMERA_SOURCE,
     CONF_THRESHOLD,
     STABILIZATION_WINDOW,
+    TRACKER_IOU_THRESHOLD,
+    TRACKER_MAX_MISSED_FRAMES,
+    VERTICAL_REGION_RATIOS,
 )
+
+
+HORIZONTAL_ABBREVIATIONS = {
+    "left": "L",
+    "center": "C",
+    "right": "R",
+}
+
+VERTICAL_ABBREVIATIONS = {
+    "head": "HEAD",
+    "waist": "WAIST",
+    "knee": "KNEE",
+    "ground": "GROUND",
+}
+
+
+def _format_region_flags(region_state, region_order, abbreviations):
+    values = []
+    for region in region_order:
+        yes_no = "YES" if region_state[region] else "NO"
+        values.append(f"{abbreviations[region]}:{yes_no}")
+    return "  ".join(values)
+
+
+def _format_detection_regions(classification):
+    horizontal = "/".join(
+        HORIZONTAL_ABBREVIATIONS[region]
+        for region in classification["horizontal"]
+    ) if classification["horizontal"] else "NONE"
+
+    vertical = "/".join(
+        VERTICAL_ABBREVIATIONS[region]
+        for region in classification["vertical"]
+    ) if classification["vertical"] else "NONE"
+
+    return f"H:{horizontal}  V:{vertical}"
 
 
 def main(
@@ -52,6 +95,11 @@ def main(
         window_size=STABILIZATION_WINDOW
     )
 
+    tracker = DetectionTracker(
+        iou_threshold=TRACKER_IOU_THRESHOLD,
+        max_missed_frames=TRACKER_MAX_MISSED_FRAMES,
+    )
+
     prev_time = time.time()
 
     print("Starting Phase 1 obstacle detection.")
@@ -71,7 +119,10 @@ def main(
 
         frame_height, frame_width = frame.shape[:2]
 
-        classifier = DirectionClassifier(frame_width)
+        classifier = DirectionClassifier(
+            frame_width,
+            vertical_ratios=VERTICAL_REGION_RATIOS,
+        )
 
         # ----------------------------------------------------
         # Detect all obstacles
@@ -79,27 +130,36 @@ def main(
         detections = detector.detect(frame)
 
         # ----------------------------------------------------
+        # Track detections across frames to improve temporal
+        # consistency without changing the detector output.
+        # ----------------------------------------------------
+        tracked_detections = tracker.update(detections)
+
+        # ----------------------------------------------------
         # Inspect EVERY obstacle and determine which regions
         # are occupied.
         # ----------------------------------------------------
-        raw_occupied_regions = classifier.get_occupied_regions(
-            detections
+        raw_spatial_state = classifier.get_spatial_state(
+            tracked_detections,
+            frame_height,
         )
 
         # ----------------------------------------------------
         # Stabilize region states
         # ----------------------------------------------------
-        occupied_regions = stabilizer.update(
-            raw_occupied_regions
+        spatial_state = stabilizer.update(
+            raw_spatial_state
         )
 
         # ----------------------------------------------------
         # Draw detection regions
         # ----------------------------------------------------
-        classifier.draw_regions(frame)
+        classifier.draw_regions(frame, frame_height)
 
-        # Draw every detected obstacle
-        for detection in detections:
+        # Draw every visible detected obstacle
+        for detection in tracked_detections:
+            if not detection.get("visible", True):
+                continue
 
             x1, y1, x2, y2 = detection["bbox"]
 
@@ -112,6 +172,7 @@ def main(
             )
 
             label_text = (
+                f"#{detection.get('track_id', '?')} "
                 f"{detection['label']} "
                 f"{detection['confidence']:.2f}"
             )
@@ -119,11 +180,26 @@ def main(
             cv2.putText(
                 frame,
                 label_text,
-                (x1, max(y1 - 10, 20)),
+                (x1, max(y1 - 22, 20)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                0.55,
                 (0, 255, 0),
                 2
+            )
+
+            classification = classifier.classify_detection(
+                detection,
+                frame_height,
+            )
+
+            cv2.putText(
+                frame,
+                _format_detection_regions(classification),
+                (x1, max(y1 - 4, 36)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                1
             )
 
         # ----------------------------------------------------
@@ -144,7 +220,7 @@ def main(
         # ----------------------------------------------------
         cv2.putText(
             frame,
-            "Occupied Regions",
+            "Spatial Occupancy",
             (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.9,
@@ -152,32 +228,38 @@ def main(
             2
         )
 
-        cv2.putText(
-            frame,
-            f"LEFT    : {'YES' if occupied_regions['left'] else 'NO'}",
-            (20, 70),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2
-        )
+        row_y = 72
+        row_spacing = 28
+        for index, vertical_region in enumerate(("head", "waist", "knee", "ground")):
+            row_state = spatial_state["cells"][vertical_region]
+            row_text = (
+                f"{vertical_region.upper():<6} "
+                f"L:{'YES' if row_state['left'] else 'NO '}  "
+                f"C:{'YES' if row_state['center'] else 'NO '}  "
+                f"R:{'YES' if row_state['right'] else 'NO '}"
+            )
+            cv2.putText(
+                frame,
+                row_text,
+                (20, row_y + index * row_spacing),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                2
+            )
 
-        cv2.putText(
-            frame,
-            f"CENTER  : {'YES' if occupied_regions['center'] else 'NO'}",
-            (20, 100),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2
+        horizontal_summary_y = row_y + 4 * row_spacing + 18
+        horizontal_text = _format_region_flags(
+            spatial_state["horizontal"],
+            ("left", "center", "right"),
+            HORIZONTAL_ABBREVIATIONS,
         )
-
         cv2.putText(
             frame,
-            f"RIGHT   : {'YES' if occupied_regions['right'] else 'NO'}",
-            (20, 130),
+            f"HORIZONTAL  {horizontal_text}",
+            (20, horizontal_summary_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            0.55,
             (255, 255, 255),
             2
         )
@@ -185,7 +267,7 @@ def main(
         cv2.putText(
             frame,
             f"Objects detected: {len(detections)}",
-            (20, 160),
+            (20, horizontal_summary_y + 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 255, 255),
@@ -195,7 +277,7 @@ def main(
         cv2.putText(
             frame,
             f"FPS: {fps:.1f}",
-            (20, 190),
+            (20, horizontal_summary_y + 60),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 255, 255),
@@ -205,7 +287,7 @@ def main(
         cv2.putText(
             frame,
             "Status: RUNNING",
-            (20, 220),
+            (20, horizontal_summary_y + 90),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 255, 0),
