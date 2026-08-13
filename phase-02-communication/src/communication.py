@@ -1,35 +1,57 @@
 """
-Phase 2 - Communication module.
+Phase 2 - Communication Module
 
-Every networking function lives here. detector.py and direction.py
-(from Phase 1) know nothing about Wi-Fi, HTTP, or the ESP32, and stay
-untouched.
+This module is responsible only for communication between
+the laptop and the ESP32.
 
-Responsibility of this module:
-    - Talk to the ESP32 over HTTP.
-    - Remember the last spatial state that was sent.
-    - Only send a new request when the spatial state actually changes,
-      so we never spam the ESP32 with repeated identical requests.
+Phase 1 is responsible for:
+    - Camera input
+    - YOLO object detection
+    - Object tracking
+    - 3x4 spatial classification
+
+Phase 2 is responsible for:
+    - Receiving the 3x4 spatial state from Phase 1
+    - Converting it into the required JSON format
+    - Sending it to the ESP32 over Wi-Fi using HTTP
+    - Avoiding duplicate HTTP requests
+
+Phase 3 is responsible for:
+    - Receiving the state on the ESP32
+    - Controlling the tactile servos
+
+The communication format is:
+
+{
+    "head": {
+        "left": false,
+        "center": false,
+        "right": false
+    },
+    "waist": {
+        "left": false,
+        "center": false,
+        "right": false
+    },
+    "knee": {
+        "left": false,
+        "center": false,
+        "right": false
+    },
+    "ground": {
+        "left": false,
+        "center": false,
+        "right": false
+    }
+}
 """
 
 import requests
 
-# ------------------------------------------------------------
-# Phase 2 configuration
-#
-# These values are defined here instead of importing "config"
-# because Phase 1 also has a file named config.py.
-#
-# When Phase 1 imports this module, Python could otherwise load
-# Phase 1's config.py instead of Phase 2's config.py.
-# ------------------------------------------------------------
 
-ESP32_PORT = 80
-REQUEST_TIMEOUT = 1
-
-# ------------------------------------------------------------
-# Spatial state definition
-# ------------------------------------------------------------
+# ============================================================
+# SPATIAL STATE DEFINITION
+# ============================================================
 
 SPATIAL_LEVELS = (
     "head",
@@ -45,22 +67,52 @@ SPATIAL_REGIONS = (
 )
 
 
+# ============================================================
+# DIRECTION SENDER
+# ============================================================
+
 class DirectionSender:
-    """Sends the current obstacle spatial state to the ESP32 over HTTP."""
+    """
+    Sends the 3x4 spatial state from Phase 1 to the ESP32.
+
+    The sender does not perform object detection or spatial
+    classification. It only handles network communication.
+    """
 
     def __init__(
         self,
         esp32_ip,
-        port=ESP32_PORT,
-        timeout=REQUEST_TIMEOUT,
+        port=80,
+        timeout=1,
         enabled=True,
     ):
-        self.base_url = f"http://{esp32_ip}:{port}"
+        self.esp32_ip = esp32_ip
+        self.port = port
         self.timeout = timeout
         self.enabled = enabled
+
+        self.base_url = (
+            f"http://{esp32_ip}:{port}"
+        )
+
+        # Stores the last successfully transmitted state.
+        #
+        # This prevents sending the same state repeatedly.
         self.previous_state = None
 
-    def _empty_state(self):
+
+    # ========================================================
+    # STATE CREATION
+    # ========================================================
+
+    @staticmethod
+    def _empty_state():
+        """
+        Create an empty 3x4 spatial state.
+
+        Every cell is initially False.
+        """
+
         return {
             level: {
                 region: False
@@ -69,7 +121,23 @@ class DirectionSender:
             for level in SPATIAL_LEVELS
         }
 
-    def _normalize_level_state(self, value):
+
+    @staticmethod
+    def _normalize_level_state(value):
+        """
+        Normalize one vertical level.
+
+        Example input:
+
+            {
+                "left": True,
+                "center": False,
+                "right": True
+            }
+
+        Missing or invalid values are treated as False.
+        """
+
         normalized = {
             region: False
             for region in SPATIAL_REGIONS
@@ -79,16 +147,35 @@ class DirectionSender:
             return normalized
 
         for region in SPATIAL_REGIONS:
+
             normalized[region] = bool(
                 value.get(region, False)
             )
 
         return normalized
 
+
     def _normalize_state(self, state):
         """
-        Convert Phase 1's spatial state into the exact 3x4
-        format expected by the ESP32.
+        Convert Phase 1's spatial state into the exact
+        3x4 format expected by the ESP32.
+
+        Phase 1 produces a complete object containing:
+
+            {
+                "cells": {
+                    "head": {...},
+                    "waist": {...},
+                    "knee": {...},
+                    "ground": {...}
+                },
+                "horizontal": {...},
+                ...
+            }
+
+        Only "cells" is required for Phase 2 communication.
+
+        The method also accepts the cells dictionary directly.
         """
 
         normalized = self._empty_state()
@@ -96,28 +183,22 @@ class DirectionSender:
         if not isinstance(state, dict):
             return normalized
 
-        # Phase 1 provides:
+        # If the complete Phase 1 spatial state was supplied,
+        # use its "cells" section.
         #
-        # {
-        #     "cells": {
-        #         "head": {...},
-        #         "waist": {...},
-        #         "knee": {...},
-        #         "ground": {...}
-        #     },
-        #     ...
-        # }
-        #
-        # Accept both the complete Phase 1 object and the
-        # cells dictionary itself.
+        # Otherwise assume that the supplied object is already
+        # the cells dictionary.
 
-        source = (
-            state.get("cells")
-            if isinstance(state.get("cells"), dict)
-            else state
-        )
+        cells = state.get("cells")
 
+        if isinstance(cells, dict):
+            source = cells
+        else:
+            source = state
+
+        # Normalize every vertical level.
         for level in SPATIAL_LEVELS:
+
             normalized[level] = (
                 self._normalize_level_state(
                     source.get(level, {})
@@ -126,12 +207,29 @@ class DirectionSender:
 
         return normalized
 
-    def _state_key(self, state):
-        """
-        Create a hashable representation of the 3x4 state.
 
-        This allows us to avoid repeatedly sending the exact
-        same state to the ESP32.
+    # ========================================================
+    # STATE COMPARISON
+    # ========================================================
+
+    @staticmethod
+    def _state_key(state):
+        """
+        Convert the 3x4 state into a hashable tuple.
+
+        The order is:
+
+            HEAD:
+                LEFT, CENTER, RIGHT
+
+            WAIST:
+                LEFT, CENTER, RIGHT
+
+            KNEE:
+                LEFT, CENTER, RIGHT
+
+            GROUND:
+                LEFT, CENTER, RIGHT
         """
 
         return tuple(
@@ -140,53 +238,105 @@ class DirectionSender:
             for region in SPATIAL_REGIONS
         )
 
+
+    # ========================================================
+    # SEND STATE
+    # ========================================================
+
     def send_state(self, state):
         """
-        Send a spatial state to the ESP32.
+        Send the current spatial state to the ESP32.
 
         Returns:
-            True  -> state was successfully sent
-            False -> state was unchanged, disabled, or failed
+
+            True:
+                A new state was successfully transmitted.
+
+            False:
+                The state was unchanged, communication was
+                disabled, or the transmission failed.
         """
 
-        normalized_state = self._normalize_state(state)
+        # ----------------------------------------------------
+        # Convert Phase 1 state to clean 3x4 state
+        # ----------------------------------------------------
+
+        normalized_state = self._normalize_state(
+            state
+        )
+
+        # ----------------------------------------------------
+        # Create comparison key
+        # ----------------------------------------------------
 
         state_key = self._state_key(
             normalized_state
         )
 
-        # Do not repeatedly send identical states.
+        # ----------------------------------------------------
+        # Do not send duplicate states
+        # ----------------------------------------------------
+
         if state_key == self.previous_state:
+
             return False
+
+        # ----------------------------------------------------
+        # Communication disabled
+        # ----------------------------------------------------
 
         if not self.enabled:
+
             return False
 
-        url = self.base_url + "/state"
+        # ----------------------------------------------------
+        # ESP32 endpoint
+        # ----------------------------------------------------
+
+        url = (
+            self.base_url
+            + "/state"
+        )
+
+        # ----------------------------------------------------
+        # Send HTTP POST request
+        # ----------------------------------------------------
 
         try:
+
             response = requests.post(
                 url,
                 json=normalized_state,
                 timeout=self.timeout,
             )
 
+            # Raise an exception for HTTP errors such as
+            # 400, 404, 500, etc.
             response.raise_for_status()
 
-            # Only remember the state after a successful
-            # communication with the ESP32.
+            # Only remember the state after the ESP32
+            # successfully accepted it.
             self.previous_state = state_key
 
             print(
-                f"[communication] Spatial state sent "
-                f"to ESP32 at {self.base_url}"
+                "[communication] "
+                f"Spatial state sent to ESP32 at "
+                f"{self.base_url}"
             )
 
             return True
 
         except requests.exceptions.RequestException as exc:
+
             print(
-                f"[communication] Could not reach ESP32 "
-                f"at {url}: {exc}"
+                "[communication] "
+                f"Could not reach ESP32 at {url}: {exc}"
             )
+
+            # Do NOT update previous_state here.
+            #
+            # This is important because the same state will
+            # be attempted again on a later frame if the
+            # network connection becomes available.
+
             return False
